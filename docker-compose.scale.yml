@@ -1,0 +1,25 @@
+# Horizontal-scaling demo overlay. Usage:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#     up --build --scale server=3
+#
+# This starts 3 independent `server` containers (no shared memory) behind
+# an nginx round-robin load balancer on :8080, all subscribed to the same
+# Redis. Point the client at ws://localhost:8080 (VITE_WS_URL) instead of
+# talking to `server` directly, open two browser tabs, and edits still sync
+# instantly even though the tabs are very likely on different containers.
+services:
+  server:
+    # Remove the host port mapping from the base file: with multiple
+    # replicas they can't all bind :1234 on the host, only the LB should be
+    # externally reachable.
+    ports: []
+
+  lb:
+    image: nginx:alpine
+    volumes:
+      - ./docker/nginx-lb.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - server
+    ports:
+      - "8080:80"
