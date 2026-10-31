@@ -28,7 +28,7 @@ async function waitForServerReady(): Promise<void> {
 }
 
 beforeAll(async () => {
-  serverProcess = spawn("npx", ["tsx", "src/index.ts"], {
+  serverProcess = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: new URL("..", import.meta.url).pathname,
     env: { ...process.env, PORT: String(PORT) },
     stdio: "pipe",
