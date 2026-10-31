@@ -1,10 +1,17 @@
 const WS_URL: string = import.meta.env.VITE_WS_URL ?? "ws://localhost:1234";
 export const API_URL: string = import.meta.env.VITE_API_URL ?? WS_URL.replace(/^ws/, "http");
 
-export interface OpRecord {
+/** Effect of one op on the visible board, recorded server-side in seq order. */
+export interface ShapeDiff {
+  s?: Record<string, unknown>;
+  d?: string[];
+}
+
+/** A recorded op as the viewer needs it (the raw Yjs update is not decoded). */
+export interface ViewOp {
   seq: number;
   ts: number;
-  op: Uint8Array;
+  diff?: ShapeDiff;
 }
 
 export interface Timeline {
@@ -13,6 +20,7 @@ export interface Timeline {
   headSeq: number;
   headTs: number | null;
   flushedSeq: number;
+  flushedTs: number | null;
   snapshots: { seq: number; ts: number }[];
 }
 
@@ -29,7 +37,6 @@ export interface ReplayPlan {
   headSeq: number;
   snapshot: (ObjRef & { seq: number; ts: number }) | null;
   segments: (ObjRef & { startSeq: number; endSeq: number; startTs: number; endTs: number })[];
-  tail: { seq: number; ts: number; op: string }[];
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -52,13 +59,6 @@ export const api = {
     getJson<ReplayPlan>(`/boards/${b(board)}/ops?after=${after}&to=${to}`),
 };
 
-export function b64ToBytes(s: string): Uint8Array {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
 /**
  * Snapshots and segments are fetched straight from S3 via presigned URLs
  * (the Node server never proxies those bytes) and gunzipped in the browser.
@@ -70,18 +70,24 @@ async function fetchGunzipText(url: string): Promise<string> {
   return await new Response(stream).text();
 }
 
-export async function fetchSnapshot(url: string): Promise<{ seq: number; ts: number; state: Uint8Array }> {
-  const j = JSON.parse(await fetchGunzipText(url)) as { seq: number; ts: number; state: string };
-  return { seq: j.seq, ts: j.ts, state: b64ToBytes(j.state) };
+/** Visible-state snapshot: plain shapes JSON, no CRDT history to load. */
+export async function fetchSnapshot(url: string): Promise<{ seq: number; ts: number; shapes: Record<string, unknown> }> {
+  return JSON.parse(await fetchGunzipText(url));
 }
 
-export async function fetchSegment(url: string): Promise<OpRecord[]> {
+export async function fetchSegment(url: string): Promise<ViewOp[]> {
   const text = await fetchGunzipText(url);
-  const ops: OpRecord[] = [];
+  const ops: ViewOp[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;
-    const j = JSON.parse(line) as { seq: number; ts: number; op: string };
-    ops.push({ seq: j.seq, ts: j.ts, op: b64ToBytes(j.op) });
+    const j = JSON.parse(line) as { seq: number; ts: number; diff?: ShapeDiff };
+    ops.push({ seq: j.seq, ts: j.ts, diff: j.diff });
   }
   return ops;
+}
+
+export function applyDiff(shapes: Record<string, unknown>, diff: ShapeDiff | undefined): void {
+  if (!diff) return;
+  if (diff.d) for (const k of diff.d) delete shapes[k];
+  if (diff.s) for (const [k, v] of Object.entries(diff.s)) shapes[k] = v;
 }

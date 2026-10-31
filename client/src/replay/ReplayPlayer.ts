@@ -1,5 +1,4 @@
-import * as Y from "yjs";
-import { api, b64ToBytes, fetchSegment, fetchSnapshot, type OpRecord, type ReplayPlan, type Timeline } from "./api";
+import { api, applyDiff, fetchSegment, fetchSnapshot, type ViewOp, type ReplayPlan, type Timeline } from "./api";
 import type { ShapeData } from "../types";
 
 export interface SeekDebug {
@@ -38,15 +37,16 @@ const MAX_GAP_MS = 1500;
  * seek(target):
  *   1. ask the server for a plan: nearest snapshot <= target + the segment
  *      objects covering (snapshot, target], as presigned S3 URLs
- *   2. download them directly from S3, load the snapshot into a fresh Y.Doc,
- *      apply only the ops after it
+ *   2. download them directly from S3, start from the snapshot's visible
+ *      board state and apply only the recorded diffs of the ops after it
  *   3. keep ops beyond the target from those segments buffered for playback
- * Seeking therefore never replays from the start: cost is bounded by one
- * snapshot interval, regardless of how long the session is.
+ * Seeking therefore never replays from the start: cost is bounded by the
+ * board size + one snapshot interval, regardless of session length. The
+ * viewer never loads the CRDT history at all.
  */
 export class ReplayPlayer {
-  private doc = new Y.Doc();
-  private buffer: OpRecord[] = [];
+  private shapes: Record<string, ShapeData> = {};
+  private buffer: ViewOp[] = [];
   private bufferedTo = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private fetching: Promise<void> | null = null;
@@ -85,14 +85,14 @@ export class ReplayPlayer {
     this.renderQueued = true;
     requestAnimationFrame(() => {
       this.renderQueued = false;
-      this.set({ shapes: this.doc.getMap<ShapeData>("shapes").toJSON() as Record<string, ShapeData> });
+      this.set({ shapes: { ...this.shapes } });
     });
   }
 
   async init(): Promise<void> {
     const timeline = await api.timeline(this.board);
     this.set({ timeline });
-    await this.seek({ seq: timeline.headSeq });
+    await this.seek({ seq: timeline.flushedSeq });
   }
 
   async refreshTimeline(): Promise<Timeline> {
@@ -103,7 +103,6 @@ export class ReplayPlayer {
 
   destroy() {
     this.pause();
-    this.doc.destroy();
     this.listeners.clear();
   }
 
@@ -129,22 +128,25 @@ export class ReplayPlayer {
 
       const plan = await api.plan(this.board, target);
       if (token !== this.seekToken) return;
-      const doc = new Y.Doc();
+      let shapes: Record<string, unknown> = {};
       let seq = 0;
       let ts: number | null = null;
-      if (plan.snapshot?.url) {
-        const snap = await fetchSnapshot(plan.snapshot.url);
-        Y.applyUpdate(doc, snap.state, "replay");
+      const [snap, segOps] = await Promise.all([
+        plan.snapshot?.url ? fetchSnapshot(plan.snapshot.url) : Promise.resolve(null),
+        Promise.all(plan.segments.map((s) => fetchSegment(s.url!))),
+      ]);
+      if (snap) {
+        shapes = snap.shapes;
         seq = snap.seq;
         ts = snap.ts;
       }
-      const future: OpRecord[] = [];
+      const future: ViewOp[] = [];
       let applied = 0;
-      const consume = (ops: OpRecord[]) => {
+      for (const ops of segOps) {
         for (const op of ops) {
           if (op.seq <= seq) continue;
           if (op.seq <= plan.targetSeq && op.seq === seq + 1) {
-            Y.applyUpdate(doc, op.op, "replay");
+            applyDiff(shapes, op.diff);
             seq = op.seq;
             ts = op.ts;
             applied++;
@@ -152,23 +154,16 @@ export class ReplayPlayer {
             future.push(op);
           }
         }
-      };
-      const segOps = await Promise.all(plan.segments.map((s) => fetchSegment(s.url!)));
-      for (const ops of segOps) consume(ops);
-      consume(plan.tail.map((o) => ({ seq: o.seq, ts: o.ts, op: b64ToBytes(o.op) })));
-      if (token !== this.seekToken) {
-        doc.destroy();
-        return;
       }
+      if (token !== this.seekToken) return;
 
-      this.doc.destroy();
-      this.doc = doc;
+      this.shapes = shapes as Record<string, ShapeData>;
       this.buffer = future.sort((a, b) => a.seq - b.seq);
       this.bufferedTo = this.buffer.length ? this.buffer[this.buffer.length - 1].seq : seq;
       this.set({
         seq,
         ts,
-        shapes: doc.getMap<ShapeData>("shapes").toJSON() as Record<string, ShapeData>,
+        shapes: { ...this.shapes },
         debug: {
           strategy: plan.snapshot ? "snapshot" : "before-first-snapshot",
           target: plan.targetSeq,
@@ -259,7 +254,7 @@ export class ReplayPlayer {
         await this.fillBuffer();
         if (!this.buffer.length) {
           const tl = await this.refreshTimeline();
-          if (tl.headSeq <= this.state.seq) {
+          if (tl.flushedSeq <= this.state.seq) {
             this.pause();
             return;
           }
@@ -287,16 +282,14 @@ export class ReplayPlayer {
     let n = 0;
     let ts = this.state.ts;
     let cur = this.state.seq;
-    this.doc.transact(() => {
-      while (this.buffer.length && this.buffer[0].seq <= seq) {
-        const op = this.buffer.shift()!;
-        if (op.seq !== cur + 1) continue;
-        Y.applyUpdate(this.doc, op.op, "replay");
-        cur = op.seq;
-        ts = op.ts;
-        n++;
-      }
-    }, "replay");
+    while (this.buffer.length && this.buffer[0].seq <= seq) {
+      const op = this.buffer.shift()!;
+      if (op.seq !== cur + 1) continue;
+      applyDiff(this.shapes, op.diff);
+      cur = op.seq;
+      ts = op.ts;
+      n++;
+    }
     this.state = { ...this.state, seq: cur, ts };
     this.queueRender();
     for (const l of this.listeners) l(this.state);
@@ -317,9 +310,7 @@ export class ReplayPlayer {
       try {
         const after = this.bufferedTo;
         const plan: ReplayPlan = await api.opsAfter(this.board, after, after + FETCH_CHUNK);
-        const ops: OpRecord[] = [];
-        for (const s of plan.segments) ops.push(...(await fetchSegment(s.url!)));
-        ops.push(...plan.tail.map((o) => ({ seq: o.seq, ts: o.ts, op: b64ToBytes(o.op) })));
+        const ops = (await Promise.all(plan.segments.map((s) => fetchSegment(s.url!)))).flat();
         if (after !== this.bufferedTo) return; // a seek reset the buffer meanwhile
         let next = after + 1;
         for (const op of ops.sort((a, b) => a.seq - b.seq)) {

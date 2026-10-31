@@ -40,7 +40,8 @@ export function ReplayView({ room, onJumpToLive }: { room: string; onJumpToLive:
 
   const tl = s.timeline;
   const start = tl?.startTs ?? null;
-  const duration = start !== null && tl?.headTs ? tl.headTs - start : 0;
+  // The scrubber spans what's durable in S3 (lags live by a few seconds).
+  const duration = start !== null && tl?.flushedTs ? tl.flushedTs - start : 0;
   const pos = scrub ?? (start !== null && s.ts !== null ? s.ts - start : 0);
 
   const onScrub = (value: number) => {
@@ -52,7 +53,7 @@ export function ReplayView({ room, onJumpToLive }: { room: string; onJumpToLive:
     }, 120);
   };
 
-  const empty = tl !== null && tl.headSeq === 0;
+  const empty = tl !== null && tl.flushedSeq === 0;
 
   return (
     <div className="replay">
@@ -101,7 +102,7 @@ export function ReplayView({ room, onJumpToLive }: { room: string; onJumpToLive:
         {showDebug && (
           <div className="debug-overlay">
             <div>
-              seq <b>{s.seq}</b> / {tl?.headSeq ?? "?"} {s.loading && "· loading…"}
+              seq <b>{s.seq}</b> / {tl?.flushedSeq ?? "?"} (live head {tl?.headSeq ?? "?"}) {s.loading && "· loading…"}
             </div>
             {s.debug && (
               <>
