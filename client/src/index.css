@@ -165,3 +165,104 @@ body {
   color: white;
   white-space: nowrap;
 }
+
+/* ---- replay ------------------------------------------------------------ */
+.replay-btn {
+  margin-left: auto;
+  margin-right: 12px;
+}
+.replay {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fafafa;
+  flex-wrap: wrap;
+}
+.replay-controls button.primary {
+  min-width: 72px;
+  font-weight: 600;
+}
+.speed-group {
+  display: inline-flex;
+}
+.speed-group button {
+  border-radius: 0;
+}
+.speed-group button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.speed-group button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+.speed-group button.active {
+  background: #111827;
+  color: white;
+}
+.replay-controls .time {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: #374151;
+  min-width: 96px;
+}
+.scrubber {
+  position: relative;
+  flex: 1;
+  min-width: 200px;
+}
+.scrubber input[type="range"] {
+  width: 100%;
+}
+.snapshot-ticks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 6px;
+  pointer-events: none;
+}
+.snapshot-ticks span {
+  position: absolute;
+  width: 2px;
+  height: 6px;
+  background: #3b82f6;
+  opacity: 0.6;
+}
+.debug-toggle {
+  font-size: 12px;
+  color: #6b7280;
+}
+.debug-overlay {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  background: rgba(17, 24, 39, 0.88);
+  color: #e5e7eb;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 8px 10px;
+  border-radius: 6px;
+  max-width: 520px;
+  pointer-events: none;
+}
+.debug-overlay code {
+  color: #93c5fd;
+  word-break: break-all;
+}
+.debug-error {
+  color: #fca5a5;
+}
+.replay-empty {
+  position: absolute;
+  top: 40%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: #6b7280;
+}

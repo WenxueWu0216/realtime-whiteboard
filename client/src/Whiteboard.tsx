@@ -7,28 +7,34 @@ import { SHAPE_COLORS, randomColor } from "./types";
 
 interface WhiteboardProps {
   shapes: Record<string, ShapeData>;
-  onAddShape: (shape: ShapeData) => void;
-  onUpdateShape: (id: string, patch: Partial<ShapeData>) => void;
-  onDeleteShape: (id: string) => void;
-  onCursorMove: (x: number | null, y: number | null) => void;
-  onSelect: (id: string | null) => void;
+  /** Replay mode: render only, no toolbar, no dragging/selection. */
+  readOnly?: boolean;
+  onAddShape?: (shape: ShapeData) => void;
+  onUpdateShape?: (id: string, patch: Partial<ShapeData>) => void;
+  onDeleteShape?: (id: string) => void;
+  onCursorMove?: (x: number | null, y: number | null) => void;
+  onSelect?: (id: string | null) => void;
 }
+
+const noop = () => {};
 
 const STAGE_WIDTH = 1400;
 const STAGE_HEIGHT = 900;
 
 export function Whiteboard({
   shapes,
-  onAddShape,
-  onUpdateShape,
-  onDeleteShape,
-  onCursorMove,
-  onSelect,
+  readOnly = false,
+  onAddShape = noop,
+  onUpdateShape = noop,
+  onDeleteShape = noop,
+  onCursorMove = noop,
+  onSelect = noop,
 }: WhiteboardProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const stageRef = useRef<Konva.Stage>(null);
 
   const select = (id: string | null) => {
+    if (readOnly) return;
     setSelectedId(id);
     onSelect(id);
   };
@@ -69,6 +75,7 @@ export function Whiteboard({
 
   return (
     <div className="whiteboard-root" tabIndex={0} onKeyDown={handleKeyDown}>
+      {!readOnly && (
       <div className="toolbar">
         <button onClick={() => addShape("rect")}>+ 矩形</button>
         <button onClick={() => addShape("ellipse")}>+ 圆形</button>
@@ -80,6 +87,7 @@ export function Whiteboard({
         )}
         <span className="hint">拖拽移动 · Delete 键删除 · {Object.keys(shapes).length} 个图形</span>
       </div>
+      )}
       <Stage
         ref={stageRef}
         width={STAGE_WIDTH}
@@ -95,6 +103,7 @@ export function Whiteboard({
               key={shape.id}
               shape={shape}
               isSelected={shape.id === selectedId}
+              readOnly={readOnly}
               onSelect={() => select(shape.id)}
               onChange={(patch) => onUpdateShape(shape.id, patch)}
             />
@@ -108,11 +117,13 @@ export function Whiteboard({
 function ShapeNode({
   shape,
   isSelected,
+  readOnly,
   onSelect,
   onChange,
 }: {
   shape: ShapeData;
   isSelected: boolean;
+  readOnly: boolean;
   onSelect: () => void;
   onChange: (patch: Partial<ShapeData>) => void;
 }) {
@@ -122,7 +133,7 @@ function ShapeNode({
   const commonProps = {
     x: shape.x,
     y: shape.y,
-    draggable: true,
+    draggable: !readOnly,
     onClick: onSelect,
     onTap: onSelect,
     onDragEnd: (e: KonvaEventObject<DragEvent>) =>
