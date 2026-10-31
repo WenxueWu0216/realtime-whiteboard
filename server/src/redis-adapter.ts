@@ -47,6 +47,33 @@ export class RedisAdapter {
     this.handlers.add(handler);
   }
 
+  offMessage(handler: RedisMessageHandler): void {
+    this.handlers.delete(handler);
+  }
+
+  /** The publishing connection; the op log shares it (see RedisOpLog). */
+  get publisher(): Redis | null {
+    return this.pub;
+  }
+
+  /** A separate connection for request/response traffic (replay reads, leases). */
+  duplicate(): Redis | null {
+    return this.pub ? this.pub.duplicate() : null;
+  }
+
+  channelFor(roomName: string): string {
+    return CHANNEL_PREFIX + roomName;
+  }
+
+  async ping(): Promise<boolean> {
+    if (!this.enabled || !this.pub) return true;
+    try {
+      return (await this.pub.ping()) === "PONG";
+    } catch {
+      return false;
+    }
+  }
+
   async subscribeRoom(roomName: string): Promise<void> {
     if (!this.enabled || !this.sub) return;
     await this.sub.subscribe(CHANNEL_PREFIX + roomName);

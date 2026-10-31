@@ -38,10 +38,25 @@ export class Persistence {
     if (!this.enabled) return;
     this.client = new MongoClient(this.mongoUrl as string);
     await this.client.connect();
-    this.db = this.client.db("whiteboard");
+    this.db = this.client.db(process.env.MONGO_DB ?? "whiteboard");
     await this.db
       .collection<SnapshotDoc>("room_snapshots")
       .createIndex({ room: 1 }, { unique: true });
+  }
+
+  /** Shared with the recording index (same database, separate collections). */
+  get database(): Db | null {
+    return this.db;
+  }
+
+  async ping(): Promise<boolean> {
+    if (!this.enabled || !this.db) return true;
+    try {
+      await this.db.command({ ping: 1 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async loadSnapshot(room: string): Promise<Uint8Array | null> {

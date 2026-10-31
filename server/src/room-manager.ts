@@ -1,8 +1,9 @@
 import { Persistence } from "./persistence.js";
 import { RedisAdapter } from "./redis-adapter.js";
+import type { Recording } from "./recording/recording.js";
 import { Room } from "./room.js";
 
-const EMPTY_ROOM_TTL_MS = 30_000;
+const EMPTY_ROOM_TTL_MS = Number(process.env.EMPTY_ROOM_TTL_MS ?? 30_000);
 
 /**
  * Owns the in-memory map of active rooms. A room is created lazily on first
@@ -17,6 +18,7 @@ export class RoomManager {
   constructor(
     private readonly redis: RedisAdapter,
     private readonly persistence: Persistence,
+    private readonly recording: Recording | null = null,
   ) {}
 
   async getOrCreate(name: string): Promise<Room> {
@@ -25,7 +27,7 @@ export class RoomManager {
       this.cancelCleanup(name);
       return existing;
     }
-    const room = new Room(name, this.redis, this.persistence);
+    const room = new Room(name, this.redis, this.persistence, this.recording);
     this.rooms.set(name, room);
     await room.init();
     return room;
@@ -52,6 +54,26 @@ export class RoomManager {
       clearTimeout(timer);
       this.cleanupTimers.delete(name);
     }
+  }
+
+  /** Graceful shutdown: persist every live doc and flush every recorder. */
+  async closeAll(): Promise<void> {
+    for (const t of this.cleanupTimers.values()) clearTimeout(t);
+    this.cleanupTimers.clear();
+    const rooms = Array.from(this.rooms.values());
+    this.rooms.clear();
+    await Promise.all(
+      rooms.map(async (r) => {
+        await r.flushLiveSnapshot().catch((e) => console.error(`[room ${r.name}] snapshot on shutdown failed`, e));
+        await r.destroy();
+      }),
+    );
+  }
+
+  get connectionCount(): number {
+    let n = 0;
+    for (const r of this.rooms.values()) n += r.connectionCount;
+    return n;
   }
 
   get roomCount(): number {

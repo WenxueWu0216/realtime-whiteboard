@@ -10,6 +10,7 @@ import {
 } from "y-protocols/awareness";
 import type { Persistence } from "./persistence.js";
 import type { RedisAdapter } from "./redis-adapter.js";
+import type { Recording } from "./recording/recording.js";
 
 export const messageSync = 0;
 export const messageAwareness = 1;
@@ -46,6 +47,7 @@ export class Room {
     name: string,
     private readonly redis: RedisAdapter,
     private readonly persistence: Persistence,
+    private readonly recording: Recording | null = null,
   ) {
     this.name = name;
     this.awareness = new Awareness(this.doc);
@@ -60,9 +62,8 @@ export class Room {
     if (snapshot) Y.applyUpdate(this.doc, snapshot, "persistence");
 
     await this.redis.subscribeRoom(this.name);
-    this.redis.onMessage((roomName, payload) => {
-      if (roomName === this.name) this.applyRedisMessage(payload);
-    });
+    this.redis.onMessage(this.onRedisMessage);
+    this.recording?.attach(this.name);
   }
 
   addConnection(ws: WebSocket): void {
@@ -92,7 +93,9 @@ export class Room {
   async destroy(): Promise<void> {
     this.closed = true;
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+    this.redis.offMessage(this.onRedisMessage);
     await this.redis.unsubscribeRoom(this.name);
+    await this.recording?.detach(this.name);
     this.doc.off("update", this.handleDocUpdate);
     this.awareness.off("update", this.handleAwarenessUpdate);
     this.awareness.destroy();
@@ -109,10 +112,24 @@ export class Room {
     this.broadcastLocal(encoding.toUint8Array(encoder));
 
     if (origin !== "redis" && origin !== "persistence") {
+      // This update came from one of *our* clients: it's a new board
+      // operation. Record it (seq + ts assigned in Redis) and fan it out to
+      // other pods. With recording on, both happen in one atomic Redis
+      // script so the log order always respects causality across pods.
       const redisEncoder = encoding.createEncoder();
       encoding.writeVarUint(redisEncoder, redisTagUpdate);
       encoding.writeVarUint8Array(redisEncoder, update);
-      this.redis.publish(this.name, Buffer.from(encoding.toUint8Array(redisEncoder)));
+      const payload = Buffer.from(encoding.toUint8Array(redisEncoder));
+      if (this.recording?.enabled) {
+        const publish = this.redis.isEnabled ? { channel: this.redis.channelFor(this.name), payload } : undefined;
+        this.recording.append(this.name, update, publish).catch((err) => {
+          // Never let recording break live collaboration.
+          console.error(`[room ${this.name}] failed to record op, publishing unrecorded:`, err);
+          this.redis.publish(this.name, payload);
+        });
+      } else {
+        this.redis.publish(this.name, payload);
+      }
     }
     if (origin !== "persistence") this.scheduleSnapshot();
   };
@@ -144,6 +161,10 @@ export class Room {
     }
   };
 
+  private onRedisMessage = (roomName: string, payload: Buffer): void => {
+    if (roomName === this.name) this.applyRedisMessage(payload);
+  };
+
   private applyRedisMessage(payload: Buffer): void {
     if (this.closed) return;
     const decoder = decoding.createDecoder(new Uint8Array(payload));
@@ -155,6 +176,14 @@ export class Room {
     } else if (tag === redisTagAwareness) {
       applyAwarenessUpdate(this.awareness, body, "redis");
     }
+  }
+
+  /** Persist the live doc immediately (graceful shutdown). */
+  async flushLiveSnapshot(): Promise<void> {
+    if (!this.persistence.isEnabled) return;
+    if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+    this.snapshotTimer = null;
+    await this.persistence.saveSnapshot(this.name, Y.encodeStateAsUpdate(this.doc));
   }
 
   private scheduleSnapshot(): void {
