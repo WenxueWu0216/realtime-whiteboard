@@ -2,6 +2,7 @@ import {
   CreateBucketCommand,
   GetObjectCommand,
   HeadBucketCommand,
+  PutBucketCorsCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -81,12 +82,27 @@ export class S3ObjectStore implements ObjectStore {
       : this.client;
   }
 
-  /** Dev convenience: create the bucket if it doesn't exist (no-op on AWS where Terraform owns it). */
-  async ensureBucket(): Promise<void> {
+  /**
+   * Dev convenience for MinIO/LocalStack: create the bucket and allow
+   * browser GETs of presigned URLs. On AWS, Terraform owns both.
+   */
+  async ensureBucket(corsOrigin = "*"): Promise<void> {
     try {
       await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
     } catch {
       await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }));
+    }
+    try {
+      await this.client.send(
+        new PutBucketCorsCommand({
+          Bucket: this.bucket,
+          CORSConfiguration: {
+            CORSRules: [{ AllowedMethods: ["GET", "HEAD"], AllowedOrigins: [corsOrigin], AllowedHeaders: ["*"], MaxAgeSeconds: 3600 }],
+          },
+        }),
+      );
+    } catch (err) {
+      console.warn("[s3] could not set bucket CORS (browser replay may fail):", (err as Error).message);
     }
   }
 

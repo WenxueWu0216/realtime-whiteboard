@@ -30,7 +30,7 @@ export class Recording {
     let store: ObjectStore;
     if (cfg.s3.bucket) {
       const s3 = new S3ObjectStore(cfg.s3);
-      if (cfg.s3.endpoint) await s3.ensureBucket(); // MinIO/LocalStack only
+      if (cfg.s3.endpoint) await s3.ensureBucket(cfg.corsOrigin); // MinIO/LocalStack only
       store = s3;
     } else {
       store = new MemoryObjectStore();
