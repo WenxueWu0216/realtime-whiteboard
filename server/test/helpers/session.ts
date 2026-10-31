@@ -7,7 +7,7 @@ import * as Y from "yjs";
  * browsers talking through the server. Returns every update in the order the
  * server would have received (and recorded) it.
  */
-export function generateSession(opts: { ops: number; clients?: number; seed?: number }): Uint8Array[] {
+export function generateSession(opts: { ops: number; clients?: number; seed?: number; maxShapes?: number }): Uint8Array[] {
   const clients = opts.clients ?? 4;
   let s = opts.seed ?? 1;
   const rand = () => {
@@ -39,7 +39,7 @@ export function generateSession(opts: { ops: number; clients?: number; seed?: nu
     };
     doc.on("update", capture);
     const r = rand();
-    if (ids.length === 0 || r < 0.25) {
+    if (ids.length === 0 || (r < 0.25 && ids.length < (opts.maxShapes ?? Infinity))) {
       const id = `s${c}-${i}`;
       shapes.set(id, { id, type: "rect", x: Math.round(rand() * 1000), y: Math.round(rand() * 800), fill: "#f97316" });
     } else if (r < 0.85) {

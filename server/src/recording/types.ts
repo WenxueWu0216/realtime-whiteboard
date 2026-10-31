@@ -8,6 +8,17 @@ export interface OpRecord {
   seq: number;
   ts: number;
   op: Uint8Array;
+  /**
+   * Effect of this op on the *visible* board, computed by the recorder while
+   * applying ops in seq order: shapes set (new value) and shapes deleted.
+   * Present on ops read back from S3 segments; absent on hot-tail ops.
+   */
+  diff?: ShapeDiff;
+}
+
+export interface ShapeDiff {
+  s?: Record<string, unknown>;
+  d?: string[];
 }
 
 export interface SegmentMeta {
@@ -24,7 +35,10 @@ export interface SnapshotMeta {
   board: string;
   seq: number;
   ts: number;
+  /** Visible board state (shapes JSON) - what viewers download. */
   key: string;
+  /** Full Yjs CRDT state - for exact reconstruction and recorder takeover. */
+  stateKey: string;
 }
 
 export interface BoardMeta {
@@ -43,6 +57,8 @@ export const keys = {
     `boards/${encodeURIComponent(board)}/ops/${pad(startSeq)}-${pad(endSeq)}.jsonl.gz`,
   snapshot: (board: string, seq: number) =>
     `boards/${encodeURIComponent(board)}/snapshots/${pad(seq)}.json.gz`,
+  snapshotState: (board: string, seq: number) =>
+    `boards/${encodeURIComponent(board)}/snapshots/${pad(seq)}.yjs.gz`,
 };
 
 // Zero-padded so S3 listings sort numerically.

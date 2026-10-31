@@ -1,9 +1,24 @@
 import * as Y from "yjs";
-import { decodeSegment, decodeSnapshot } from "./codec.js";
+import { applyDiff, decodeSegment, decodeSnapshot, decodeState } from "./codec.js";
 import type { RecordingIndex } from "./index-store.js";
 import type { ObjectStore } from "./object-store.js";
 import type { OpLog } from "./op-log.js";
 import type { OpRecord, SegmentMeta, SnapshotMeta } from "./types.js";
+
+const SEGMENT_FETCH_CONCURRENCY = 8;
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) {
+      const idx = i++;
+      out[idx] = await fn(items[idx]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 export interface ReconstructResult {
   doc: Y.Doc;
@@ -23,8 +38,18 @@ export interface ReplayPlan {
   headSeq: number;
   snapshot: (SnapshotMeta & { url: string | null }) | null;
   segments: (SegmentMeta & { url: string | null })[];
-  /** Ops not yet flushed to S3 (still only in the Redis hot tail), inlined. */
-  tail: { seq: number; ts: number; op: string }[];
+}
+
+export interface ViewResult {
+  shapes: Record<string, unknown>;
+  seq: number;
+  ts: number | null;
+  snapshot: SnapshotMeta | null;
+  opsApplied: number;
+  segmentsFetched: number;
+  /** "view": visible snapshot + recorded diffs. "exact": Yjs state + raw ops (target in the unflushed tail). */
+  path: "view" | "exact";
+  ms: number;
 }
 
 export interface Timeline {
@@ -32,7 +57,9 @@ export interface Timeline {
   startTs: number | null;
   headSeq: number;
   headTs: number | null;
+  /** Highest seq durable in S3 = how far the replay UI can go (lags live by ~SEGMENT_MAX_AGE_MS). */
   flushedSeq: number;
+  flushedTs: number | null;
   snapshots: { seq: number; ts: number }[];
 }
 
@@ -56,11 +83,11 @@ export class ReplayService {
     let segmentsFetched = 0;
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      const segs = await this.index.segmentsInRange(board, next, toSeq);
-      for (const seg of segs) {
-        if (seg.endSeq < next) continue;
-        const body = await this.store.get(seg.key);
-        segmentsFetched++;
+      const segs = (await this.index.segmentsInRange(board, next, toSeq)).filter((s) => s.endSeq >= next);
+      // Fetch segments concurrently (bounded), then apply in seq order.
+      const bodies = await mapLimit(segs, SEGMENT_FETCH_CONCURRENCY, (seg) => this.store.get(seg.key));
+      segmentsFetched += bodies.length;
+      for (const body of bodies) {
         for (const op of decodeSegment(body)) {
           if (op.seq === next && op.seq <= toSeq) {
             ops.push(op);
@@ -106,8 +133,7 @@ export class ReplayService {
     if (opts.useSnapshots !== false) {
       snapshot = await this.index.findSnapshotAtOrBefore(board, targetSeq);
       if (snapshot) {
-        const snap = decodeSnapshot(await this.store.get(snapshot.key));
-        Y.applyUpdate(doc, snap.state, "replay");
+        Y.applyUpdate(doc, decodeState(await this.store.get(snapshot.stateKey)), "replay");
         base = snapshot.seq;
         ts = snapshot.ts;
       }
@@ -126,6 +152,49 @@ export class ReplayService {
       snapshot,
       opsApplied: ops.length,
       segmentsFetched,
+      ms: performance.now() - t0,
+    };
+  }
+
+  /**
+   * The visible board at targetSeq: visible-state snapshot + the recorded
+   * per-op diffs after it. Never touches the CRDT history, so the cost is
+   * O(board size + ops since snapshot) however long the session is.
+   * Targets in the not-yet-flushed tail fall back to the exact Yjs path.
+   */
+  async view(board: string, targetSeq: number, opts: { useSnapshots?: boolean } = {}): Promise<ViewResult> {
+    const t0 = performance.now();
+    const meta = await this.index.getBoard(board);
+    if (targetSeq > meta.flushedSeq) {
+      const r = await this.reconstruct(board, targetSeq, opts);
+      const shapes = r.doc.getMap("shapes").toJSON();
+      r.doc.destroy();
+      return { ...r, shapes, path: "exact", ms: performance.now() - t0 };
+    }
+    let shapes: Record<string, unknown> = {};
+    let snapshot: SnapshotMeta | null = null;
+    let base = 0;
+    let ts: number | null = null;
+    if (opts.useSnapshots !== false) {
+      snapshot = await this.index.findSnapshotAtOrBefore(board, targetSeq);
+      if (snapshot) {
+        const snap = decodeSnapshot(await this.store.get(snapshot.key));
+        shapes = snap.shapes;
+        base = snap.seq;
+        ts = snap.ts;
+      }
+    }
+    const { ops, segmentsFetched } = await this.loadOps(board, base, targetSeq);
+    for (const op of ops) applyDiff(shapes, op.diff);
+    if (ops.length) ts = ops[ops.length - 1].ts;
+    return {
+      shapes,
+      seq: base + ops.length,
+      ts,
+      snapshot,
+      opsApplied: ops.length,
+      segmentsFetched,
+      path: "view",
       ms: performance.now() - t0,
     };
   }
@@ -177,14 +246,16 @@ export class ReplayService {
   }
 
   /**
-   * What a client needs to rebuild the board at targetSeq itself: a
-   * presigned snapshot URL, presigned segment URLs, and the unflushed tail.
-   * With includeSnapshot=false it's an "ops after X" plan used to keep
-   * buffering ahead during playback.
+   * What a viewer needs to rebuild the visible board at targetSeq itself:
+   * a presigned URL for the nearest visible-state snapshot and presigned
+   * URLs for the segments after it (each op carries its visible diff). The
+   * browser downloads straight from S3; Node never proxies those bytes.
+   * Capped at the last flushed seq. With afterSeq set, it's an "ops after X"
+   * plan (no snapshot) used to keep buffering ahead during playback.
    */
   async plan(board: string, afterSeq: number | null, targetSeq: number): Promise<ReplayPlan> {
-    const [head, startTs] = await Promise.all([this.headSeq(board), this.startTs(board)]);
-    targetSeq = Math.min(targetSeq, head.seq);
+    const [head, startTs, meta] = await Promise.all([this.headSeq(board), this.startTs(board), this.index.getBoard(board)]);
+    targetSeq = Math.max(0, Math.min(targetSeq, meta.flushedSeq));
 
     let snapshot: ReplayPlan["snapshot"] = null;
     let base = afterSeq ?? 0;
@@ -195,30 +266,14 @@ export class ReplayService {
         base = s.seq;
       }
     }
-
     const segments: ReplayPlan["segments"] = [];
-    let covered = base;
     if (targetSeq > base) {
       for (const seg of await this.index.segmentsInRange(board, base + 1, targetSeq)) {
         segments.push({ ...seg, url: await this.store.presignGet(seg.key) });
-        covered = Math.max(covered, seg.endSeq);
       }
     }
-    const tail =
-      covered < targetSeq
-        ? (await this.loadOps(board, covered, targetSeq)).ops.map((o) => ({
-            seq: o.seq,
-            ts: o.ts,
-            op: Buffer.from(o.op).toString("base64"),
-          }))
-        : [];
-
-    let targetTs: number | null = null;
-    if (tail.length) targetTs = tail[tail.length - 1].ts;
-    else if (segments.length) targetTs = null; // client learns it from the segment
-    else if (snapshot) targetTs = snapshot.ts;
-
-    return { board, targetSeq, targetTs, startTs, headSeq: head.seq, snapshot, segments, tail };
+    const targetTs = segments.length ? null : (snapshot?.ts ?? null);
+    return { board, targetSeq, targetTs, startTs, headSeq: head.seq, snapshot, segments };
   }
 
   async timeline(board: string): Promise<Timeline> {
@@ -234,6 +289,7 @@ export class ReplayService {
       headSeq: head.seq,
       headTs: head.ts,
       flushedSeq: meta.flushedSeq,
+      flushedTs: meta.flushedTs,
       snapshots: snaps.map((s) => ({ seq: s.seq, ts: s.ts })),
     };
   }

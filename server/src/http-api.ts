@@ -129,9 +129,10 @@ export function createApi(d: ApiDeps): express.Express {
   );
 
   /**
-   * GET /boards/:id/replay?at=<ms offset>|seq=<n>[&mode=state|plan]
+   * GET /boards/:id/replay?at=<ms offset>|seq=<n>[&mode=state|plan][&exact=1]
    *   mode=state (default): the server rebuilds the board at the target
-   *     (nearest snapshot + ops since) and returns it.
+   *     (nearest snapshot + only the ops since) and returns it. exact=1 does
+   *     it on the CRDT level and also returns the Yjs state.
    *   mode=plan: returns presigned URLs for the snapshot and segments plus
    *     the unflushed tail; the client downloads straight from S3 and
    *     applies the ops itself (what the replay UI uses).
@@ -146,22 +147,42 @@ export function createApi(d: ApiDeps): express.Express {
         res.json(withProxyUrls(req, await replay.plan(board, null, target.seq)));
         return;
       }
-      const r = await replay.reconstruct(board, target.seq);
-      const state = Buffer.from(Y.encodeStateAsUpdate(r.doc)).toString("base64");
+      const offset = (ts: number | null) => (ts !== null && startTs !== null ? ts - startTs : null);
+      if (req.query.exact === "1") {
+        // Exact CRDT reconstruction: Yjs snapshot state + raw ops. Returns the
+        // Yjs state too, e.g. to fork/restore a board at that point.
+        const r = await replay.reconstruct(board, target.seq);
+        res.json({
+          board,
+          path: "exact",
+          seq: r.seq,
+          ts: r.ts,
+          startTs,
+          offsetMs: offset(r.ts),
+          snapshot: r.snapshot ? { seq: r.snapshot.seq, key: r.snapshot.stateKey } : null,
+          opsApplied: r.opsApplied,
+          segmentsFetched: r.segmentsFetched,
+          serverMs: Number(r.ms.toFixed(2)),
+          state: Buffer.from(Y.encodeStateAsUpdate(r.doc)).toString("base64"),
+          shapes: r.doc.getMap("shapes").toJSON(),
+        });
+        r.doc.destroy();
+        return;
+      }
+      const v = await replay.view(board, target.seq);
       res.json({
         board,
-        seq: r.seq,
-        ts: r.ts,
+        path: v.path,
+        seq: v.seq,
+        ts: v.ts,
         startTs,
-        offsetMs: r.ts !== null && startTs !== null ? r.ts - startTs : null,
-        snapshot: r.snapshot ? { seq: r.snapshot.seq, key: r.snapshot.key } : null,
-        opsApplied: r.opsApplied,
-        segmentsFetched: r.segmentsFetched,
-        serverMs: Number(r.ms.toFixed(2)),
-        state,
-        shapes: r.doc.getMap("shapes").toJSON(),
+        offsetMs: offset(v.ts),
+        snapshot: v.snapshot ? { seq: v.snapshot.seq, key: v.snapshot.key } : null,
+        opsApplied: v.opsApplied,
+        segmentsFetched: v.segmentsFetched,
+        serverMs: Number(v.ms.toFixed(2)),
+        shapes: v.shapes,
       });
-      r.doc.destroy();
     }),
   );
 

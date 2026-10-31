@@ -106,15 +106,16 @@ describe.skipIf(!S3 || !MONGO || !hasBinary("redis-server"))("recording + replay
           }
         }
       }
-      for (const op of plan.tail) {
-        if (op.seq > k && op.seq <= target) {
-          Y.applyUpdate(full, Buffer.from(op.op, "base64"));
-          k = op.seq;
-        }
-      }
       expect(k).toBe(target);
+      expect(r.path).toBe("view");
       expect(r.shapes).toEqual(full.getMap("shapes").toJSON());
       expect(r.opsApplied).toBe(target % 50);
+      // exact (CRDT-level) reconstruction agrees
+      const ex = await (await fetch(`http://localhost:${ports[0]}/boards/${board}/replay?seq=${target}&exact=1`)).json();
+      expect(ex.shapes).toEqual(full.getMap("shapes").toJSON());
+      expect(Buffer.from(Y.encodeStateVector(full))).toEqual(
+        Buffer.from(Y.encodeStateVector((() => { const d = new Y.Doc(); Y.applyUpdate(d, Buffer.from(ex.state, "base64")); return d; })())),
+      );
     }
 
     // Plan mode: presigned snapshot URL works and decodes.
@@ -123,6 +124,7 @@ describe.skipIf(!S3 || !MONGO || !hasBinary("redis-server"))("recording + replay
     expect(plan.snapshot.url).toContain("X-Amz-Signature");
     const snap = JSON.parse(gunzipSync(new Uint8Array(await (await fetch(plan.snapshot.url)).arrayBuffer())).toString());
     expect(snap.seq).toBe(100);
+    expect(Object.keys(snap.shapes).length).toBeGreaterThan(0);
 
     a.provider.destroy();
     b.provider.destroy();

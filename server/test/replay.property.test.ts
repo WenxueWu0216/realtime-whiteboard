@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { decodeSegment, decodeSnapshot, encodeSegment, encodeSnapshot } from "../src/recording/codec.js";
+import { decodeSegment, decodeSnapshot, decodeState, encodeSegment, encodeSnapshot, encodeState } from "../src/recording/codec.js";
 import { fingerprint, generateSession, replayAll } from "./helpers/session.js";
 import { recordBoard } from "./helpers/recorded-board.js";
 
@@ -8,8 +8,11 @@ describe("codec", () => {
   it("round-trips segments and snapshots", () => {
     const ops = generateSession({ ops: 20, seed: 7 }).map((op, i) => ({ seq: i + 1, ts: 1000 + i, op }));
     expect(decodeSegment(encodeSegment(ops))).toEqual(ops);
-    const snap = { board: "b", seq: 5, ts: 9, state: ops[0].op, shapes: { a: 1 } };
+    const withDiff = [{ ...ops[0], diff: { s: { a: { x: 1 } }, d: ["b"] } }];
+    expect(decodeSegment(encodeSegment(withDiff))).toEqual(withDiff);
+    const snap = { board: "b", seq: 5, ts: 9, shapes: { a: 1 } };
     expect(decodeSnapshot(encodeSnapshot(snap))).toEqual(snap);
+    expect(decodeState(encodeState(ops[0].op))).toEqual(ops[0].op);
   });
 });
 
@@ -53,6 +56,14 @@ describe("snapshot + ops up to k == replaying all ops 0..k (property)", () => {
             expect(viaSnapshot.seq).toBe(k);
             expect(fingerprint(viaSnapshot.doc)).toEqual(fingerprint(truth));
             expect(fingerprint(viaFullReplay.doc)).toEqual(fingerprint(truth));
+            // visible-state path (what viewers use): snapshot shapes + recorded diffs
+            const view = await replay.view(board, k);
+            expect(view.path).toBe("view");
+            expect(view.seq).toBe(k);
+            expect(view.shapes).toEqual(truth.getMap("shapes").toJSON());
+            expect(view.opsApplied).toBeLessThanOrEqual(p.snapshotEveryOps);
+            const viewFull = await replay.view(board, k, { useSnapshots: false });
+            expect(viewFull.shapes).toEqual(truth.getMap("shapes").toJSON());
             // and the snapshot path never applies more ops than one snapshot interval
             expect(viaSnapshot.opsApplied).toBeLessThanOrEqual(p.snapshotEveryOps);
             viaSnapshot.doc.destroy();
@@ -71,7 +82,11 @@ describe("snapshot + ops up to k == replaying all ops 0..k (property)", () => {
     for (const op of ops.slice(200)) r.oplog.appendSync(r.board, op); // appended, recorder hasn't run
     for (const k of [150, 199, 200, 201, 260, 300]) {
       const got = await r.replay.reconstruct(r.board, k);
-      expect(fingerprint(got.doc)).toEqual(fingerprint(replayAll(ops, k)));
+      const truth = replayAll(ops, k);
+      expect(fingerprint(got.doc)).toEqual(fingerprint(truth));
+      const view = await r.replay.view(r.board, k);
+      expect(view.path).toBe(k <= 200 ? "view" : "exact");
+      expect(view.shapes).toEqual(truth.getMap("shapes").toJSON());
     }
   });
 });

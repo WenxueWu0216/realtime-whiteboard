@@ -33,6 +33,9 @@ describe("seek over a long session", () => {
       expect(got.opsApplied).toBeLessThan(SNAP);
       expect(fingerprint(got.doc)).toEqual(truth.get(t));
       got.doc.destroy();
+      const view = await r.replay.view(r.board, t);
+      expect(view.opsApplied).toBeLessThan(SNAP);
+      expect(view.shapes).toEqual(truth.get(t)!.shapes);
     }
   }, 60_000);
 
@@ -62,7 +65,6 @@ describe("seek over a long session", () => {
     expect(plan.segments[0].startSeq).toBeLessThanOrEqual(2_001);
     expect(plan.segments.at(-1)!.endSeq).toBeGreaterThanOrEqual(2_345);
     expect(plan.segments.every((s) => s.endSeq > 2_000)).toBe(true);
-    expect(plan.tail).toEqual([]);
     const truth = replayAll(ops, 2_345);
     const rebuilt = await r.replay.reconstruct(r.board, 2_345);
     expect(fingerprint(rebuilt.doc)).toEqual(fingerprint(truth));

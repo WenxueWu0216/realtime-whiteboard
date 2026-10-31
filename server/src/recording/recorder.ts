@@ -1,11 +1,11 @@
 import * as Y from "yjs";
 import type { Config } from "../config.js";
-import { encodeSegment, encodeSnapshot } from "./codec.js";
+import { encodeSegment, encodeSnapshot, encodeState } from "./codec.js";
 import type { RecordingIndex } from "./index-store.js";
 import type { ObjectStore } from "./object-store.js";
 import type { OpLog } from "./op-log.js";
 import type { ReplayService } from "./replay.js";
-import { keys, type OpRecord } from "./types.js";
+import { keys, type OpRecord, type ShapeDiff } from "./types.js";
 
 export interface RecorderDeps {
   oplog: OpLog;
@@ -30,6 +30,13 @@ export interface RecorderDeps {
  * given pod can be ahead of / behind the log because Redis relay is async.
  * That makes "snapshot + ops (S, k]" provably the same as replaying 1..k.
  *
+ * While applying each op the recorder also records its effect on the
+ * visible board (which shapes were set / deleted) next to the raw op in the
+ * segment. Viewers replay those diffs on top of the visible-state snapshot,
+ * so a seek costs O(board size + ops since snapshot) instead of
+ * O(CRDT history): a Yjs state keeps a tombstone for every overwritten value,
+ * so loading the CRDT snapshot itself grows with session length.
+ *
  * Exactly one pod records a given board at a time (Redis lease). Any pod
  * with the board open competes for the lease, so if the holder dies another
  * pod takes over within RECORDER_LEASE_MS, rebuilding its doc from the last
@@ -42,6 +49,7 @@ export class Recorder {
   private timer: ReturnType<typeof setInterval> | null = null;
 
   private doc: Y.Doc | null = null;
+  private diff: ShapeDiff | null = null;
   private consumedSeq = 0;
   private lastSnapshotSeq = 0;
   private lastSnapshotTs: number | null = null;
@@ -111,6 +119,20 @@ export class Recorder {
     const rebuilt = await this.d.replay.reconstruct(this.board, meta.flushedSeq);
     this.doc?.destroy();
     this.doc = rebuilt.doc;
+    const shapes = this.doc.getMap("shapes");
+    shapes.observe((ev) => {
+      const diff = (this.diff ??= {});
+      for (const key of ev.keysChanged) {
+        if (shapes.has(key)) {
+          const v = shapes.get(key);
+          (diff.s ??= {})[key] = v instanceof Y.AbstractType ? v.toJSON() : v;
+          if (diff.d) diff.d = diff.d.filter((k) => k !== key);
+        } else {
+          (diff.d ??= []).push(key);
+          if (diff.s) delete diff.s[key];
+        }
+      }
+    });
     this.consumedSeq = meta.flushedSeq;
     this.lastSnapshotSeq = meta.lastSnapshotSeq;
     this.lastSnapshotTs = meta.lastSnapshotTs ?? meta.startTs;
@@ -129,9 +151,10 @@ export class Recorder {
         if (op.seq !== this.consumedSeq + 1) {
           throw new Error(`recorder for "${this.board}" expected seq ${this.consumedSeq + 1}, got ${op.seq}`);
         }
+        this.diff = null;
         Y.applyUpdate(doc, op.op, "recorder");
         if (this.buffer.length === 0) this.bufferSince = this.now();
-        this.buffer.push(op);
+        this.buffer.push(this.diff ? { ...op, diff: this.diff } : op);
         this.consumedSeq = op.seq;
         this.lastSnapshotTs ??= op.ts;
 
@@ -178,18 +201,16 @@ export class Recorder {
     const doc = this.doc!;
     const seq = this.consumedSeq;
     const key = keys.snapshot(this.board, seq);
-    await this.d.store.put(
-      key,
-      encodeSnapshot({
-        board: this.board,
-        seq,
-        ts,
-        state: Y.encodeStateAsUpdate(doc),
-        shapes: doc.getMap("shapes").toJSON(),
-      }),
-      "application/gzip",
-    );
-    await this.d.index.addSnapshot({ board: this.board, seq, ts, key });
+    const stateKey = keys.snapshotState(this.board, seq);
+    await Promise.all([
+      this.d.store.put(
+        key,
+        encodeSnapshot({ board: this.board, seq, ts, shapes: doc.getMap("shapes").toJSON() }),
+        "application/gzip",
+      ),
+      this.d.store.put(stateKey, encodeState(Y.encodeStateAsUpdate(doc)), "application/gzip"),
+    ]);
+    await this.d.index.addSnapshot({ board: this.board, seq, ts, key, stateKey });
     this.lastSnapshotSeq = seq;
     this.lastSnapshotTs = ts;
     this.stats.snapshots++;
