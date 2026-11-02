@@ -136,7 +136,7 @@ No edit was missed by any peer in any run.
 - **Recording overhead is within run-to-run variance at this load** (on: 1,500–2,500; off: 2,000–2,500).
 - **The HPA must scale well before that.** CPU is only ~35–45% at 1,500–2,000 connections, so the chart's HPA target is **40% CPU** (60% would scale out only after p99 had already failed).
 
-Idle-connection capacity (no edits): run in progress, results to be added.
+**Idle-connection capacity** (connections complete the handshake, then send nothing; 1,000 per step; 1 run): **13,000 idle connections per pod** at probe p99 < 100 ms with 0 failures, server RSS 191 MB, CPU 31%. The 14,000 step failed on a single 142 ms server event-loop stall (CPU 25%), not on memory or file descriptors. This sandbox caps a process at 20,000 file descriptors, so nothing above ~19.9k could have been tested anyway. Connecting 2,000 at once (3,000/s) made ~4% of handshakes fail; the pod handles connect bursts of 500–1,000 cleanly.
 
 Raw results (JSON per step) are produced with `--json`; the generator also reports its own event-loop delay, so a stalled generator can't masquerade as a slow server.
 
