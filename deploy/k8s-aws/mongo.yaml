@@ -1,0 +1,66 @@
+# Single-replica MongoDB on EKS for the demo deployment (gp3 EBS volume).
+# Holds only small metadata: live-doc snapshots and the recording index
+# (snapshot seq -> key, segment seq/ts ranges). Recordings themselves are in S3.
+# For production use MongoDB Atlas (or DocumentDB) and point the
+# whiteboard-mongo secret at it instead - see docs/aws-deploy.md.
+#
+# Requires: kubectl -n whiteboard create secret generic mongo-auth \
+#   --from-literal=username=whiteboard --from-literal=password=<random>
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: whiteboard
+spec:
+  clusterIP: None
+  selector: { app: mongo }
+  ports: [{ port: 27017 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: whiteboard
+spec:
+  serviceName: mongo
+  replicas: 1
+  selector: { matchLabels: { app: mongo } }
+  template:
+    metadata: { labels: { app: mongo } }
+    spec:
+      securityContext: { fsGroup: 999 }
+      containers:
+        - name: mongo
+          image: mongo:7
+          ports: [{ containerPort: 27017 }]
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom: { secretKeyRef: { name: mongo-auth, key: username } }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: mongo-auth, key: password } }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          readinessProbe:
+            exec: { command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"] }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources: { requests: { storage: 10Gi } }

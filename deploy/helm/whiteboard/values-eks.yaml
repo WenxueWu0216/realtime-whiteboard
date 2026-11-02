@@ -1,0 +1,50 @@
+# AWS / EKS. Combine with the Terraform-generated values (image repos, IRSA
+# role, ElastiCache URL, bucket):
+#   helm upgrade --install wb deploy/helm/whiteboard -n whiteboard \
+#     -f deploy/helm/whiteboard/values-eks.yaml \
+#     -f deploy/helm/whiteboard/values-eks.generated.yaml \
+#     --set server.image.tag=$TAG --set client.image.tag=$TAG
+server:
+  image: { pullPolicy: IfNotPresent }
+  env:
+    SNAPSHOT_EVERY_OPS: "1000"
+    SNAPSHOT_EVERY_MS: "60000"
+    SEGMENT_MAX_OPS: "500"
+    SEGMENT_MAX_AGE_MS: "2000"
+    CORS_ORIGIN: "*"            # narrow to your domain
+
+hpa:
+  minReplicas: 2
+  maxReplicas: 6                # 2 x t3.medium nodes fit ~4 server pods; raise with node_max_size
+
+mongo:
+  existingSecret: whiteboard-mongo   # key MONGO_URL (see docs/aws-deploy.md)
+
+s3:
+  endpoint: ""                  # real S3: no custom endpoint, virtual-hosted style
+  forcePathStyle: false
+  localCredentials: { enabled: false }   # IRSA provides credentials
+
+# ALB health checks the WebSocket tier on readiness, so a draining pod
+# (readiness 503 after SIGTERM) stops getting new connections.
+service:
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /readyz
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # ALB speaks WebSockets natively; keep idle sockets open for an hour
+    # (y-websocket also pings every 30 s) instead of the 60 s default.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # HTTPS: request an ACM certificate, then use instead:
+    # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:...
+    # alb.ingress.kubernetes.io/ssl-redirect: "443"
+  # No sticky sessions: any pod can serve any room (Redis pub/sub fan-out),
+  # and a reconnecting client resyncs from whichever pod it lands on.
