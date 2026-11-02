@@ -9,6 +9,7 @@ A multi-user whiteboard: CRDT-based conflict resolution, a horizontally scaled W
 - [Measured results](#measured-results)
 - [Running locally](#running-locally)
 - [Kubernetes](#kubernetes)
+- [Deployment on AWS](#deployment-on-aws)
 - [Tests, benchmark and load tests](#tests-benchmark-and-load-tests)
 - [API](#api)
 
@@ -213,6 +214,33 @@ kubectl port-forward svc/wb-whiteboard-server 1234:1234 & kubectl port-forward s
 ```
 
 The HPA needs metrics-server (`kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml`; on kind add `--kubelet-insecure-tls`).
+
+## Deployment on AWS
+
+Infrastructure as code for EKS + ElastiCache + S3 lives in [`infra/terraform`](infra/terraform); the step-by-step guide, cost estimate (≈ $0.30/h) and teardown are in **[docs/aws-deploy.md](docs/aws-deploy.md)**.
+
+```mermaid
+flowchart LR
+  U[Browsers] -- "HTTP + WebSocket" --> ALB["ALB<br/>(AWS Load Balancer Controller,<br/>idle timeout 3600 s, no stickiness)"]
+  ALB -- "/ws, /boards" --> S["server pods<br/>EKS Deployment + HPA"]
+  ALB -- "/" --> C[client pods]
+  S -- "rediss:// pub/sub + Streams" --> R[(ElastiCache Redis 7.1)]
+  S -- "IRSA: s3:Get/PutObject boards/*" --> B[(S3 recordings<br/>private, SSE, lifecycle)]
+  S --> M[(MongoDB StatefulSet<br/>gp3 EBS / or Atlas)]
+  U -- "presigned GET" --> B
+  GH[GitHub Actions] -- "OIDC" --> ECR[(ECR)]
+  ECR --> S
+  ECR --> C
+```
+
+| Piece | Where |
+|---|---|
+| VPC, EKS (managed nodes, metrics-server, EBS CSI), ElastiCache, S3 bucket + lifecycle + CORS, IRSA roles, ECR, GitHub OIDC role | `infra/terraform/*.tf` |
+| EKS values: ALB ingress for WebSockets, `/readyz` health checks, IRSA ServiceAccount, Mongo secret | `deploy/helm/whiteboard/values-eks.yaml` (+ `terraform output -raw helm_values`) |
+| MongoDB StatefulSet for the demo | `deploy/k8s-aws/mongo.yaml` |
+| CI: tests (incl. Redis + Mongo + S3 API), client build, `helm lint`, `terraform validate`; image push to ECR via OIDC on tags | `.github/workflows/` |
+
+Pods never hold AWS keys: the S3 client uses the SDK's default credential chain, which picks up the IRSA web-identity token on EKS. Locally, the same code talks to LocalStack through `S3_ENDPOINT`.
 
 ## Tests, benchmark and load tests
 
