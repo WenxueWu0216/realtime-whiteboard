@@ -1,0 +1,9 @@
+# cp terraform.tfvars.example terraform.tfvars
+region              = "us-east-1"
+project             = "whiteboard"
+node_instance_types = ["t3.medium"]
+node_desired_size   = 2
+redis_node_type     = "cache.t4g.micro"
+# Narrow S3 CORS to your app once you know its URL (the ALB hostname or your domain):
+# allowed_origins   = ["https://whiteboard.example.com"]
+github_repo         = "WenxueWu0216/realtime-whiteboard"

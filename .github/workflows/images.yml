@@ -1,0 +1,36 @@
+# Builds and pushes server/client images to ECR. Runs only on version tags
+# or by hand - never on every push. Authenticates with GitHub OIDC (the
+# role from infra/terraform `ci_role_arn`), so no AWS keys are stored here.
+#
+# Repository settings -> Variables: AWS_REGION, AWS_CI_ROLE_ARN, ECR_REGISTRY
+name: images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # for OIDC
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push
+        env:
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+          TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/whiteboard/server:$TAG" server
+          docker build -t "$REGISTRY/whiteboard/client:$TAG" client
+          docker push "$REGISTRY/whiteboard/server:$TAG"
+          docker push "$REGISTRY/whiteboard/client:$TAG"
+          echo "Deploy with: --set server.image.tag=$TAG --set client.image.tag=$TAG" >> "$GITHUB_STEP_SUMMARY"
