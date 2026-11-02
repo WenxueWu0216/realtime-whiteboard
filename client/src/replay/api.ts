@@ -1,5 +1,4 @@
-const WS_URL: string = import.meta.env.VITE_WS_URL ?? "ws://localhost:1234";
-export const API_URL: string = import.meta.env.VITE_API_URL ?? WS_URL.replace(/^ws/, "http");
+import { API_URL } from "../endpoints";
 
 /** Effect of one op on the visible board, recorded server-side in seq order. */
 export interface ShapeDiff {

@@ -5,7 +5,7 @@ import type { CursorState, ShapeData } from "./types";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
-const SERVER_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:1234";
+import { WS_URL as SERVER_URL } from "./endpoints";
 
 interface RoomHandle {
   doc: Y.Doc;
