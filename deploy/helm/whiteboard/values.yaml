@@ -36,7 +36,9 @@ hpa:
   enabled: true
   minReplicas: 2
   maxReplicas: 10
-  targetCPUUtilizationPercentage: 60
+  # From the load test: probe p99 crosses 100 ms at ~50-60% CPU on a 1-vCPU pod
+  # (event-loop stalls, not CPU saturation), so scale out well before that.
+  targetCPUUtilizationPercentage: 40
   # WebSocket connections are long-lived: scale up fast, scale down slowly
   # so reconnect storms don't make replicas flap.
   behavior:

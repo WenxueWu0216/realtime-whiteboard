@@ -9,3 +9,9 @@ blob-report/
 .DS_Store
 .idea/
 *.tsbuildinfo
+deploy/helm/whiteboard/values-eks.generated.yaml
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+.terraform.lock.hcl.bak

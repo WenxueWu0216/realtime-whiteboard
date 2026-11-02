@@ -195,7 +195,9 @@ async function main() {
       ),
     );
   };
+  const metricsOff = values["http-url"] === "none"; // e.g. behind an ingress that doesn't expose /metrics
   const serverMetrics = async () => {
+    if (metricsOff) return null;
     try {
       const r = await fetch(`${httpUrl}/metrics`, { signal: AbortSignal.timeout(3000) });
       return (await r.json()) as { connections: number; rssBytes: number; eventLoopDelayMs?: { p99: number; max: number } };
@@ -257,7 +259,7 @@ async function main() {
       `| ${target} | ${row.open} | ${row.failed} | ${row.serverConns ?? "down"} | ${row.serverCpuPct ?? "-"} | ${row.rssMB ?? "-"} | ${row.serverLoopP99 ?? "-"} / ${row.serverLoopMax ?? "-"} | ${row.p50} | ${row.p99} | ${row.max} | ${row.probeLoopMax} | ${row.recvPerSec} |`,
     );
     const failRatio = (t.failed + t.dropped) / Math.max(1, t.attempted);
-    if (!m) limit = { target, reason: "server stopped answering /metrics" };
+    if (!m && !metricsOff) limit = { target, reason: "server stopped answering /metrics" };
     else if (failRatio > 0.01) limit = { target, reason: `${(failRatio * 100).toFixed(1)}% connections failed/dropped` };
     else if (!(row.p99 <= P99_LIMIT)) limit = { target, reason: `probe p99 ${row.p99} ms > ${P99_LIMIT} ms` };
     if (limit) break;
