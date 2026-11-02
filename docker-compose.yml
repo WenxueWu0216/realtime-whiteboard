@@ -1,3 +1,9 @@
+# Full local stack, no AWS needed:
+#   docker compose up --build
+#   open http://localhost:5173/?room=demo   (Replay button in the header)
+#
+# S3 is emulated by LocalStack. (MinIO works too - point S3_ENDPOINT at it -
+# but MinIO no longer publishes free community images to Docker Hub.)
 services:
   redis:
     image: redis:7-alpine
@@ -11,15 +17,41 @@ services:
     volumes:
       - mongo-data:/data/db
 
+  s3:
+    image: localstack/localstack:3.8
+    environment:
+      SERVICES: s3
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 3s
+      retries: 20
+
   server:
     build: ./server
     environment:
       PORT: 1234
       REDIS_URL: redis://redis:6379
       MONGO_URL: mongodb://mongo:27017
+      S3_BUCKET: whiteboard
+      S3_ENDPOINT: http://s3:4566
+      # presigned URLs are opened by the browser, so they must use a host-reachable endpoint
+      S3_PUBLIC_ENDPOINT: http://localhost:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test        # LocalStack only; on AWS the pod's IAM role is used
+      AWS_SECRET_ACCESS_KEY: test
+      SNAPSHOT_EVERY_OPS: 1000
+      SNAPSHOT_EVERY_MS: 60000
+      SEGMENT_MAX_OPS: 500
+      SEGMENT_MAX_AGE_MS: 2000
     depends_on:
-      - redis
-      - mongo
+      redis:
+        condition: service_started
+      mongo:
+        condition: service_started
+      s3:
+        condition: service_healthy
     ports:
       - "1234:1234"
 
@@ -28,6 +60,7 @@ services:
       context: ./client
       args:
         VITE_WS_URL: ws://localhost:1234
+        VITE_API_URL: http://localhost:1234
     depends_on:
       - server
     ports:

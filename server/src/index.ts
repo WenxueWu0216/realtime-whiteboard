@@ -37,8 +37,9 @@ async function main() {
       return;
     }
     const url = new URL(request.url ?? "/", "http://localhost");
-    // Path convention (matches y-websocket client default): /<room-name>
-    const roomName = decodeURIComponent(url.pathname.replace(/^\//, "")) || "default";
+    // Path convention (matches y-websocket client default): /<room-name>,
+    // optionally behind an ingress prefix: /ws/<room-name>
+    const roomName = decodeURIComponent(url.pathname.replace(/^\/(ws\/)?/, "")) || "default";
 
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
       wss.emit("connection", ws, request, roomName);
