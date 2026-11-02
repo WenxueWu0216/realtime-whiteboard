@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage } from "node:http";
+import path from "node:path";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
 import { Persistence } from "./persistence.js";
@@ -9,6 +10,10 @@ import { setupConnection } from "./ws-handler.js";
 const PORT = Number(process.env.PORT ?? 1234);
 const REDIS_URL = process.env.REDIS_URL; // e.g. redis://localhost:6379
 const MONGO_URL = process.env.MONGO_URL; // e.g. mongodb://localhost:27017
+// Directory holding the built React app (client/dist). Set in the production
+// Docker image so one container serves both the UI and the WebSocket
+// endpoint on the same origin; unset in dev, where Vite serves the UI.
+const STATIC_DIR = process.env.STATIC_DIR;
 
 async function main() {
   const redis = new RedisAdapter(REDIS_URL);
@@ -28,6 +33,17 @@ async function main() {
   app.get("/rooms", (_req, res) => {
     res.json(roomManager.listRooms());
   });
+
+  if (STATIC_DIR) {
+    const staticRoot = path.resolve(STATIC_DIR);
+    app.use(express.static(staticRoot));
+    // SPA fallback: any other GET (e.g. "/?room=demo" or a deep link) gets
+    // index.html. WebSocket upgrades never reach Express, so they are
+    // unaffected by this catch-all.
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(staticRoot, "index.html"));
+    });
+  }
 
   const httpServer = createServer(app);
   const wss = new WebSocketServer({ noServer: true });
@@ -56,6 +72,7 @@ async function main() {
     console.log(`[whiteboard-server] listening on :${PORT}`);
     console.log(`[whiteboard-server] redis pub/sub: ${redis.isEnabled ? "enabled" : "disabled (single-instance mode)"}`);
     console.log(`[whiteboard-server] mongo persistence: ${persistence.isEnabled ? "enabled" : "disabled (in-memory only)"}`);
+    if (STATIC_DIR) console.log(`[whiteboard-server] serving static client from ${path.resolve(STATIC_DIR)}`);
   });
 
   const shutdown = async () => {

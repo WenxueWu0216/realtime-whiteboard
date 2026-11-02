@@ -1,37 +1,51 @@
+# Local full stack: app (UI + WebSocket server, built from ./Dockerfile)
+# + Redis (cross-instance pub/sub) + MongoDB (room snapshots).
+#
+#   cp .env.example .env        # once; fake local values, edit as you like
+#   docker compose up --build --wait
+#   open http://localhost:8080/?room=demo
+#
+# All configuration comes from environment variables (.env or the shell).
 services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   mongo:
     image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?set MONGO_ROOT_USERNAME (cp .env.example .env)}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD (cp .env.example .env)}
     ports:
-      - "27017:27017"
+      - "127.0.0.1:${MONGO_HOST_PORT:-27017}:27017"
     volumes:
       - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
-  server:
-    build: ./server
+  app:
+    build: .
     environment:
-      PORT: 1234
+      PORT: 8080
       REDIS_URL: redis://redis:6379
-      MONGO_URL: mongodb://mongo:27017
+      MONGO_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
     depends_on:
-      - redis
-      - mongo
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
     ports:
-      - "1234:1234"
-
-  client:
-    build:
-      context: ./client
-      args:
-        VITE_WS_URL: ws://localhost:1234
-    depends_on:
-      - server
-    ports:
-      - "5173:80"
+      - "${APP_HOST_PORT:-8080}:8080"
 
 volumes:
   mongo-data:

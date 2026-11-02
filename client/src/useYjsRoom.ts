@@ -5,7 +5,18 @@ import type { CursorState, ShapeData } from "./types";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
-const SERVER_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:1234";
+// VITE_WS_URL wins when set at build time. Otherwise: in dev (Vite on :5173)
+// talk to the standalone server on :1234; in a production build assume the
+// UI is served by the same Node server that handles WebSockets (see the root
+// Dockerfile), so connect back to the page's own origin - this is what makes
+// one image work unchanged on localhost, docker compose and Cloud Run.
+function defaultServerUrl(): string {
+  if (import.meta.env.DEV) return "ws://localhost:1234";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}`;
+}
+
+const SERVER_URL = import.meta.env.VITE_WS_URL || defaultServerUrl();
 
 interface RoomHandle {
   doc: Y.Doc;
