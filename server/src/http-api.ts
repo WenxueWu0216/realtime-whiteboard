@@ -1,3 +1,4 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import express, { type Request, type Response, type NextFunction } from "express";
 import * as Y from "yjs";
 import type { Persistence } from "./persistence.js";
@@ -93,9 +94,21 @@ export function createApi(d: ApiDeps): express.Express {
     }),
   );
 
+  // Event-loop delay is the best single signal of a saturated WebSocket pod
+  // (every frame is handled on this one thread). Reset on every read.
+  const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+  loopDelay.enable();
+
   app.get("/metrics", (_req, res) => {
     const mem = process.memoryUsage();
+    const eventLoopDelayMs = {
+      p50: +(loopDelay.percentile(50) / 1e6).toFixed(1),
+      p99: +(loopDelay.percentile(99) / 1e6).toFixed(1),
+      max: +(loopDelay.max / 1e6).toFixed(1),
+    };
+    loopDelay.reset();
     res.json({
+      eventLoopDelayMs,
       connections: d.roomManager.connectionCount,
       rooms: d.roomManager.roomCount,
       rssBytes: mem.rss,
