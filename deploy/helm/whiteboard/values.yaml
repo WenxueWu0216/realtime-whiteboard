@@ -1,0 +1,102 @@
+# Defaults are environment-neutral. Overlay with values-local.yaml (kind /
+# minikube) or values-eks.yaml (AWS).
+
+nameOverride: ""
+fullnameOverride: ""
+
+server:
+  image:
+    repository: whiteboard-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2            # ignored while the HPA is enabled
+  port: 1234
+  resources:
+    # The load test (README "Measured results") was run with exactly these
+    # limits, so the measured per-pod connection limit applies to this pod.
+    requests: { cpu: "500m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "512Mi" }
+  # Graceful shutdown: readiness fails at once, sockets are drained, pending
+  # op-log batches are flushed to S3. Keep this > SHUTDOWN_DRAIN_MS + flush time.
+  terminationGracePeriodSeconds: 30
+  shutdownDrainMs: 5000
+  env:
+    SNAPSHOT_EVERY_OPS: "1000"
+    SNAPSHOT_EVERY_MS: "60000"
+    SEGMENT_MAX_OPS: "500"
+    SEGMENT_MAX_AGE_MS: "2000"
+    CORS_ORIGIN: "*"
+  # Extra env (e.g. secretKeyRef entries)
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+  # WebSocket connections are long-lived: scale up fast, scale down slowly
+  # so reconnect storms don't make replicas flap.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 30 }
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 120 }
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# External dependencies. Only the endpoints are configured here; credentials
+# come from a Secret (Mongo) or the pod's IAM role (S3, via IRSA on EKS).
+redis:
+  url: "redis://redis:6379"
+mongo:
+  # Name of an existing Secret with key MONGO_URL
+  existingSecret: ""
+  url: "mongodb://mongo:27017"   # used only if existingSecret is empty
+  database: whiteboard
+s3:
+  bucket: ""
+  region: us-east-1
+  endpoint: ""          # MinIO/LocalStack only; leave empty on AWS
+  publicEndpoint: ""    # browser-reachable endpoint for presigned URLs (local only)
+  forcePathStyle: false
+  # Static keys for local S3 emulators only. Never set on AWS (IRSA instead).
+  localCredentials:
+    enabled: false
+    accessKeyId: test
+    secretAccessKey: test
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}       # EKS: eks.amazonaws.com/role-arn: <IRSA role ARN>
+
+client:
+  enabled: true
+  image:
+    repository: whiteboard-client
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests: { cpu: "50m", memory: "32Mi" }
+    limits: { cpu: "200m", memory: "64Mi" }
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: []

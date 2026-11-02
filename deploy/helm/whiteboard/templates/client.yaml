@@ -1,0 +1,38 @@
+{{- if .Values.client.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "whiteboard.fullname" . }}-client
+  labels:
+    {{- include "whiteboard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: client
+spec:
+  replicas: {{ .Values.client.replicas }}
+  selector:
+    matchLabels: {{- include "whiteboard.clientSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "whiteboard.clientSelector" . | nindent 8 }}
+    spec:
+      containers:
+        - name: client
+          image: "{{ .Values.client.image.repository }}:{{ .Values.client.image.tag }}"
+          imagePullPolicy: {{ .Values.client.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 80 }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+          resources: {{- toYaml .Values.client.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "whiteboard.fullname" . }}-client
+  labels:
+    {{- include "whiteboard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: client
+spec:
+  selector: {{- include "whiteboard.clientSelector" . | nindent 4 }}
+  ports:
+    - { name: http, port: 80, targetPort: http }
+{{- end }}

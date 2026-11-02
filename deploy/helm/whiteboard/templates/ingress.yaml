@@ -1,0 +1,42 @@
+{{- if .Values.ingress.enabled }}
+# One host: /ws and the API go to the WebSocket tier, everything else to the
+# static client. No sticky sessions needed: any pod can serve any room
+# because edits fan out through Redis pub/sub.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "whiteboard.fullname" . }}
+  labels: {{- include "whiteboard.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - {{- with .Values.ingress.host }}
+      host: {{ . }}
+      {{- end }}
+      http:
+        paths:
+          {{- range list "/ws" "/boards" "/healthz" }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "whiteboard.fullname" $ }}-server
+                port: { name: http }
+          {{- end }}
+          {{- if .Values.client.enabled }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "whiteboard.fullname" . }}-client
+                port: { name: http }
+          {{- end }}
+{{- end }}

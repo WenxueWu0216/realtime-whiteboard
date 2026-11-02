@@ -1,0 +1,6 @@
+apiVersion: v2
+name: whiteboard
+description: Real-time collaborative whiteboard - WebSocket tier (HPA), web client, recording/replay
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

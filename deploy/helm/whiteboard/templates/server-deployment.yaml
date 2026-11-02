@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "whiteboard.fullname" . }}-server
+  labels:
+    {{- include "whiteboard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.server.replicas }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "whiteboard.serverSelector" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: {{- include "whiteboard.serverSelector" . | nindent 8 }}
+      {{- with .Values.server.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "whiteboard.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds }}
+      # spread pods so one node failure doesn't drop every connection
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "whiteboard.serverSelector" . | nindent 14 }}
+      containers:
+        - name: server
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: {{ .Values.server.port }} }
+          env:
+            - { name: PORT, value: {{ .Values.server.port | quote }} }
+            - name: INSTANCE_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: REDIS_URL, value: {{ .Values.redis.url | quote }} }
+            {{- if .Values.mongo.existingSecret }}
+            - name: MONGO_URL
+              valueFrom: { secretKeyRef: { name: {{ .Values.mongo.existingSecret }}, key: MONGO_URL } }
+            {{- else }}
+            - { name: MONGO_URL, value: {{ .Values.mongo.url | quote }} }
+            {{- end }}
+            - { name: MONGO_DB, value: {{ .Values.mongo.database | quote }} }
+            {{- if .Values.s3.bucket }}
+            - { name: S3_BUCKET, value: {{ .Values.s3.bucket | quote }} }
+            - { name: AWS_REGION, value: {{ .Values.s3.region | quote }} }
+            {{- end }}
+            {{- if .Values.s3.endpoint }}
+            - { name: S3_ENDPOINT, value: {{ .Values.s3.endpoint | quote }} }
+            - { name: S3_FORCE_PATH_STYLE, value: "true" }
+            {{- end }}
+            {{- if .Values.s3.publicEndpoint }}
+            - { name: S3_PUBLIC_ENDPOINT, value: {{ .Values.s3.publicEndpoint | quote }} }
+            {{- end }}
+            {{- if .Values.s3.localCredentials.enabled }}
+            - { name: AWS_ACCESS_KEY_ID, value: {{ .Values.s3.localCredentials.accessKeyId | quote }} }
+            - { name: AWS_SECRET_ACCESS_KEY, value: {{ .Values.s3.localCredentials.secretAccessKey | quote }} }
+            {{- end }}
+            - { name: SHUTDOWN_DRAIN_MS, value: {{ .Values.server.shutdownDrainMs | quote }} }
+            {{- range $k, $v := .Values.server.env }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # Liveness never depends on Redis/Mongo (a Redis blip must not
+          # restart every pod); readiness does, and flips to 503 on SIGTERM.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          resources: {{- toYaml .Values.server.resources | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

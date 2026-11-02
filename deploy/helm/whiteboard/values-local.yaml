@@ -1,0 +1,19 @@
+# Local Kubernetes (kind / minikube / Docker Desktop). Dependencies come
+# from deploy/k8s-local/deps.yaml (Redis, MongoDB, LocalStack S3).
+server:
+  image: { repository: whiteboard-server, tag: dev, pullPolicy: Never }
+client:
+  image: { repository: whiteboard-client, tag: dev, pullPolicy: Never }
+redis:
+  url: redis://redis:6379
+mongo:
+  url: mongodb://mongo:27017
+s3:
+  bucket: whiteboard
+  endpoint: http://localstack:4566
+  publicEndpoint: http://localhost:4566   # via kubectl port-forward svc/localstack 4566
+  localCredentials:
+    enabled: true
+hpa:
+  minReplicas: 2
+  maxReplicas: 5
