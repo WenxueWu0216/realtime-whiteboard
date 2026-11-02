@@ -8,3 +8,4 @@ blob-report/
 *.log
 .DS_Store
 .idea/
+*.tsbuildinfo

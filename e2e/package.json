@@ -4,7 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "stack:up": "docker compose -f ../docker-compose.yml up --build --wait",
+    "stack:down": "docker compose -f ../docker-compose.yml down -v",
+    "test:stack": "E2E_BASE_URL=${E2E_BASE_URL:-http://localhost:${APP_HOST_PORT:-8080}} playwright test",
+    "test:docker": "npm run stack:up && { npm run test:stack; status=$?; npm run stack:down; exit $status; }"
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0"
