@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports: ["27017:27017"]
+      s3:
+        image: localstack/localstack:3.8
+        env: { SERVICES: s3 }
+        ports: ["4566:4566"]
+    defaults:
+      run: { working-directory: server }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install redis-server (the multi-instance tests spawn their own)
+        run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - name: Tests (incl. full-stack on Redis + Mongo + S3 API)
+        run: npm test
+        env:
+          TEST_S3_ENDPOINT: http://localhost:4566
+          TEST_MONGO_URL: mongodb://localhost:27017
+
+  client:
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: client }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: { version: v3.16.2 }
+      - run: helm lint deploy/helm/whiteboard -f deploy/helm/whiteboard/values-local.yaml
+      - run: helm lint deploy/helm/whiteboard -f deploy/helm/whiteboard/values-eks.yaml
+      - run: helm template wb deploy/helm/whiteboard -f deploy/helm/whiteboard/values-eks.yaml > /dev/null
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: infra/terraform }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.9.8 }
+      - run: terraform init -backend=false
+      - run: terraform validate
