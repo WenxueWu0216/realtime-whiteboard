@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint, test, build (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [server, client]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.package }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      # The server's vitest suite starts the real server and talks to it with
+      # real y-websocket clients. The client has no unit tests yet.
+      - name: Unit tests
+        if: matrix.package == 'server'
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  e2e:
+    name: Playwright e2e (docker compose stack)
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: e2e
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install e2e dependencies
+        run: npm ci
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      # Fake, local-only placeholder values (see .env.example). The stack
+      # lives and dies inside this job; nothing here is a real credential.
+      - name: Create .env for docker compose
+        working-directory: .
+        run: cp .env.example .env
+
+      - name: Build and start app + Redis + MongoDB
+        run: npm run stack:up
+
+      - name: Run Playwright against the stack
+        run: npm run test:stack
+
+      - name: Dump container logs
+        if: failure()
+        working-directory: .
+        run: docker compose logs --no-color
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop the stack
+        if: always()
+        run: npm run stack:down

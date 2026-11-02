@@ -1,0 +1,25 @@
+# Keep the build context small and never send secrets to the daemon.
+.git
+.github
+**/node_modules
+**/dist
+e2e
+docker
+**/test-results
+**/playwright-report
+**/blob-report
+**/*.log
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+*-key.json
+**/service-account*.json
+.DS_Store
+.idea
+.vscode
+README.md
+docker-compose*.yml
+Dockerfile

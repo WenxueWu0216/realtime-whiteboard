@@ -120,6 +120,12 @@ function ShapeNode({
   const strokeWidth = isSelected ? 3 : 0;
 
   const commonProps = {
+    // Stable identifiers on the top-level Konva node of every shape. Purely
+    // for inspection (e.g. the Playwright e2e tests read
+    // `Konva.stages[0].find(".shape")` to compare two clients' canvases);
+    // they don't affect rendering or sync.
+    id: shape.id,
+    name: "shape",
     x: shape.x,
     y: shape.y,
     draggable: true,

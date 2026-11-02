@@ -1,0 +1,128 @@
+name: Deploy to Cloud Run
+
+# Runs only after the CI workflow has finished successfully for a push to
+# main - never for pull requests and never if any CI job failed.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # needed to mint the OIDC token for Workload Identity Federation
+
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: false
+
+# Every credential/identifier is referenced by name only. Required repository
+# secrets:
+#   GCP_PROJECT_ID                  e.g. my-project
+#   GCP_REGION                      e.g. europe-west1
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+#   GCP_SERVICE_ACCOUNT             deployer@<project>.iam.gserviceaccount.com
+# Optional repository variables (Settings -> Secrets and variables -> Variables):
+#   CLOUD_RUN_SERVICE               service name (default: realtime-whiteboard)
+#   GCP_ARTIFACT_REPO               Artifact Registry docker repo (default: whiteboard)
+#   CLOUD_RUN_SECRETS               Secret Manager refs mounted as env vars, e.g.
+#                                   REDIS_URL=whiteboard-redis-url:latest,MONGO_URL=whiteboard-mongo-url:latest
+#   CLOUD_RUN_EXTRA_FLAGS           extra `gcloud run deploy` flags, e.g. --max-instances=1
+#   CLOUD_RUN_ALLOW_UNAUTHENTICATED "true" to make the service publicly reachable
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ secrets.GCP_REGION }}
+  SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'realtime-whiteboard' }}
+  AR_REPO: ${{ vars.GCP_ARTIFACT_REPO || 'whiteboard' }}
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      # Deploy exactly the commit CI tested, not whatever main points to now.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Check required configuration
+        env:
+          WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          missing=0
+          for name in PROJECT_ID REGION WIF_PROVIDER SERVICE_ACCOUNT; do
+            if [ -z "${!name}" ]; then
+              echo "::error::required secret for ${name} is not set"
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image to Artifact Registry
+        id: image
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          registry="${REGION}-docker.pkg.dev"
+          image="${registry}/${PROJECT_ID}/${AR_REPO}/${SERVICE}:${SHA}"
+          gcloud auth configure-docker "${registry}" --quiet
+          docker build -t "${image}" .
+          docker push "${image}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          project_id: ${{ env.PROJECT_ID }}
+          image: ${{ steps.image.outputs.image }}
+          # WebSockets on Cloud Run: an open socket is a request bounded by
+          # the request timeout, so raise it to the 60 min maximum (clients
+          # reconnect automatically after that). Session affinity keeps a
+          # browser on the same instance between reconnects. With more than
+          # one instance, REDIS_URL must be provided (CLOUD_RUN_SECRETS) so
+          # instances relay updates to each other.
+          flags: --port=8080 --timeout=3600 --session-affinity ${{ vars.CLOUD_RUN_EXTRA_FLAGS }}
+          secrets: ${{ vars.CLOUD_RUN_SECRETS }}
+
+      - name: Allow unauthenticated access
+        if: vars.CLOUD_RUN_ALLOW_UNAUTHENTICATED == 'true'
+        run: |
+          gcloud run services add-iam-policy-binding "${SERVICE}" \
+            --project "${PROJECT_ID}" --region "${REGION}" \
+            --member=allUsers --role=roles/run.invoker --quiet
+
+      - name: Smoke test /healthz
+        if: vars.CLOUD_RUN_ALLOW_UNAUTHENTICATED == 'true'
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 3 "${URL}/healthz"
+
+      - name: Summary
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          {
+            echo "### Deployed to Cloud Run"
+            echo "- Service: \`${SERVICE}\` (${REGION})"
+            echo "- Image: \`${IMAGE}\`"
+            echo "- URL: ${URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
