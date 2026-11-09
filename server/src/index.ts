@@ -5,7 +5,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { Persistence } from "./persistence.js";
 import { RedisAdapter } from "./redis-adapter.js";
 import { RoomManager } from "./room-manager.js";
-import { setupConnection } from "./ws-handler.js";
+import { acceptConnection } from "./ws-handler.js";
 
 const PORT = Number(process.env.PORT ?? 1234);
 const REDIS_URL = process.env.REDIS_URL; // e.g. redis://localhost:6379
@@ -58,14 +58,8 @@ async function main() {
     });
   });
 
-  wss.on("connection", async (ws: WebSocket, _req: IncomingMessage, roomName: string) => {
-    try {
-      const room = await roomManager.getOrCreate(roomName);
-      setupConnection(ws, room, roomManager);
-    } catch (err) {
-      console.error(`[ws] failed to join room "${roomName}":`, err);
-      ws.close(1011, "internal error");
-    }
+  wss.on("connection", (ws: WebSocket, _req: IncomingMessage, roomName: string) => {
+    acceptConnection(ws, roomName, roomManager);
   });
 
   httpServer.listen(PORT, () => {

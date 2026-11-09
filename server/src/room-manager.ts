@@ -12,6 +12,7 @@ const EMPTY_ROOM_TTL_MS = 30_000;
  */
 export class RoomManager {
   private readonly rooms = new Map<string, Room>();
+  private readonly initializing = new Map<string, Promise<Room>>();
   private readonly cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
@@ -19,16 +20,34 @@ export class RoomManager {
     private readonly persistence: Persistence,
   ) {}
 
-  async getOrCreate(name: string): Promise<Room> {
+  /**
+   * Returns the room once it is fully initialised (snapshot applied, Redis
+   * subscribed). Concurrent callers for a room that is still initialising
+   * share the same in-flight promise instead of receiving a half-loaded
+   * room, and a room whose init fails is not left behind in the map.
+   */
+  getOrCreate(name: string): Promise<Room> {
+    this.cancelCleanup(name);
     const existing = this.rooms.get(name);
-    if (existing) {
-      this.cancelCleanup(name);
-      return existing;
-    }
+    if (existing) return Promise.resolve(existing);
+    const pending = this.initializing.get(name);
+    if (pending) return pending;
+
     const room = new Room(name, this.redis, this.persistence);
-    this.rooms.set(name, room);
-    await room.init();
-    return room;
+    const ready = room.init().then(
+      () => {
+        this.initializing.delete(name);
+        this.rooms.set(name, room);
+        return room;
+      },
+      async (err: unknown) => {
+        this.initializing.delete(name);
+        await room.destroy().catch(() => {});
+        throw err;
+      },
+    );
+    this.initializing.set(name, ready);
+    return ready;
   }
 
   notifyMaybeEmpty(name: string): void {
