@@ -1,87 +1,81 @@
-# 实时协作白板 (Real-Time Collaborative Whiteboard)
+# Real-Time Collaborative Whiteboard
 
-多人实时协作画板：CRDT 冲突消解 + WebSocket 多实例横向扩展 + 离线自动合并。
+A multi-user real-time whiteboard: CRDT conflict resolution, horizontally scalable WebSocket servers, and automatic merging of offline edits.
 
-## 核心设计
+## Core design
 
-| 问题 | 方案 |
+| Problem | Approach |
 |---|---|
-| 并发编辑冲突 | [Yjs](https://github.com/yjs/yjs)（CRDT）—— 每个客户端本地可写，无需锁/中心排序，收敛到同一状态 |
-| WebSocket 横向扩展 | `y-redis` 风格的 Redis pub/sub：每个服务器实例把本地收到的 update 广播到 Redis channel，其他实例订阅后转发给自己的客户端 |
-| 离线重连合并 | Yjs 的 state vector diff：重连时客户端与服务器交换 state vector，只传输缺失的 update，自动合并，不丢不重 |
-| 持久化 | 房间的 Yjs 文档定期 snapshot 到 MongoDB（`Y.encodeStateAsUpdate`），服务器重启后可恢复 |
-| 渲染性能 | react-konva 只重绘 dirty layer；光标广播用 `requestAnimationFrame` 节流到 ~20fps；awareness 用 Yjs Awareness protocol（不进 CRDT 历史） |
+| Concurrent edit conflicts | [Yjs](https://github.com/yjs/yjs) (CRDT): every client can write locally with no locks or central ordering, and all replicas converge to the same state |
+| Scaling WebSockets horizontally | `y-redis`-style Redis pub/sub: each server instance publishes the updates it receives from its own clients to a Redis channel; the other instances subscribe and forward them to their clients |
+| Merging after an offline period | Yjs state-vector diffs: on reconnect the client and server exchange state vectors and send only the missing updates, which merge automatically with nothing lost or duplicated |
+| Persistence | Each room's Yjs document is snapshotted to MongoDB (`Y.encodeStateAsUpdate`, debounced after changes) and restored when the server restarts |
+| Rendering performance | Shapes are drawn with react-konva; cursor broadcasts are throttled with `requestAnimationFrame` (at most one awareness update per frame); cursors use the Yjs Awareness protocol, so they never enter the CRDT history |
 
-## 目录结构
+## Project layout
 
 ```
 realtime-whiteboard/
-├── server/            # Node + Express + ws (y-websocket 协议) + Redis pub/sub + Mongo 持久化
+├── server/            # Node + Express + ws (y-websocket protocol) + Redis pub/sub + Mongo persistence
 │   └── src/
-│       ├── index.ts           # HTTP + WebSocket 入口
-│       ├── ws-handler.ts       # y-protocols/sync + awareness 处理
-│       ├── redis-adapter.ts    # 跨实例广播
-│       └── persistence.ts      # MongoDB 房间快照
+│       ├── index.ts           # HTTP + WebSocket entry point
+│       ├── ws-handler.ts       # y-protocols sync + awareness handling
+│       ├── redis-adapter.ts    # cross-instance broadcast
+│       └── persistence.ts      # MongoDB room snapshots
 ├── client/            # React + TS + Vite + react-konva + yjs
 │   └── src/
-│       ├── Whiteboard.tsx      # 画布：矩形、便签、拖拽
-│       ├── useYjsRoom.ts       # Yjs 文档 + WebsocketProvider 绑定
-│       ├── Cursors.tsx         # 其他人的光标（awareness）
+│       ├── Whiteboard.tsx      # canvas: rectangles, ellipses, sticky notes, dragging
+│       ├── useYjsRoom.ts       # Yjs document + WebsocketProvider binding
+│       ├── Cursors.tsx         # other participants' cursors (awareness)
 │       └── ConnectionStatus.tsx
-├── Dockerfile         # 生产镜像：一个 Node 进程同时提供前端静态文件 + WebSocket
-├── docker-compose.yml # app + Redis + MongoDB 一键起（配置见 .env.example）
-├── .github/workflows/ # CI（lint/单测/构建/Playwright）+ Cloud Run 部署
-└── e2e/                # Playwright：两个浏览器同时编辑、断网重连收敛
+├── Dockerfile         # production image: one Node process serves the static UI + WebSocket
+├── docker-compose.yml # app + Redis + MongoDB in one command (config in .env.example)
+├── .github/workflows/ # CI (lint / unit tests / build / Playwright) + Cloud Run deploy
+└── e2e/               # Playwright: two browsers editing at once, offline reconnect convergence
 ```
 
-## 快速开始（最小可跑版本：单房间、多人同步画图）
+## Quick start (minimal setup: one room, several people drawing in sync)
 
 ```bash
-# 1. 起 Redis + Mongo（横向扩展 & 持久化在最小版本里是可选的，不起也能跑）
-cp .env.example .env            # 首次：compose 的配置（本地假值）
+# 1. Start Redis + Mongo (optional for the minimal setup: the server runs without them)
+cp .env.example .env            # first time only: compose config (fake local values)
 docker compose up -d redis mongo
 
-# 2. 服务端
+# 2. Server
 cd server && npm install && npm run dev   # ws://localhost:1234
 
-# 3. 客户端（新开一个终端）
+# 3. Client (in a new terminal)
 cd client && npm install && npm run dev   # http://localhost:5173
 
-# 4. 打开两个浏览器标签页访问同一个房间 URL，同时画图，观察实时同步
+# 4. Open the same room URL in two browser tabs and draw in both to watch them sync
 #    http://localhost:5173/?room=demo
 ```
 
-## 验证 Redis 横向扩展（多实例广播）
+## Checking Redis horizontal scaling (multi-instance broadcast)
 
 ```bash
-cp .env.example .env   # 首次
+cp .env.example .env   # first time only
 docker compose -f docker-compose.yml -f docker-compose.scale.yml \
   up --build --scale app=3
 ```
 
-这会起 3 个互不共享内存的 `app` 容器，前面挂一个纯轮询（无 sticky session）的 nginx（`docker/nginx-lb.conf`），监听 `:8080`。直接打开 `http://localhost:8080/?room=demo` 的两个标签页（页面和 WebSocket 都经过 LB），大概率会被轮询分到不同的容器上 —— 如果这时两边编辑还能实时同步，就证明是 Redis pub/sub 在把"实例 A 收到的 update"广播给"实例 B 上的客户端"，而不是侥幸两个连接落在了同一进程。
+This starts 3 `app` containers that share no memory, behind a plain round-robin nginx with no sticky sessions (`docker/nginx-lb.conf`) listening on `:8080`. Open `http://localhost:8080/?room=demo` in two tabs; both the page and the WebSocket go through the load balancer. The tabs will very likely land on different containers. If edits still sync in real time, Redis pub/sub is relaying the updates that instance A receives to the clients on instance B. Without it, sync would only work when both connections happened to hit the same process.
 
-> ⚠️ 已知问题：多实例下，一个**新打开该房间**的实例只会收到之后的增量 update，拿不到其他实例已有的历史状态（Redis 只转发增量，Mongo 快照有 3 秒防抖）。客户端断网重连到另一个实例时可能无法收敛 —— 见下文 "Known limitations"。
+> ⚠️ Known issue: with several instances, an instance that opens a room for the first time only receives later updates. It doesn't get the state the other instances already hold, because Redis relays only new updates and Mongo snapshots are debounced by 3 seconds. A client that reconnects to a different instance after being offline may not converge. See "Known limitations" below.
 
-## 测试
+## Tests
 
 ```bash
-cd server && npm test   # vitest：真实起服务器 + 真实 y-websocket 客户端，验证并发编辑收敛 & 离线重连合并
-cd e2e && npx playwright install chromium && npm test   # 两个真实浏览器 context 同时编辑同一房间、断网重连
-cd e2e && npm run test:docker   # 同上，但跑在 docker compose 栈（app + Redis + Mongo）上
+cd server && npm test   # vitest: starts the real server and real y-websocket clients; checks concurrent-edit convergence and offline merge
+cd e2e && npx playwright install chromium && npm test   # two real browser contexts editing the same room, plus offline reconnect
+cd e2e && npm run test:docker   # same suite, run against the docker compose stack (app + Redis + Mongo)
 ```
 
-## 已知的下一步（骨架已预留接口，未完全实现）
+## Planned next steps (hooks exist in the code, not fully implemented)
 
-1. **鉴权 / 房间权限**：目前任意 room id 即可加入，生产版本应加 JWT + 房间成员校验。
-2. **渲染性能进阶**：当前 react-konva 默认整层重绘，图形数量上千后应改为脏区域重绘或分层（静态图形一层、正在拖拽的图形单独一层）。
-3. **快照压缩**：`Y.encodeStateAsUpdate` 全量快照会随历史增长而变大，生产环境应定期用 `Y.encodeStateAsUpdate(doc)` 替换旧快照（相当于 GC/compaction），而不是无限累积 update 日志。
-
-## 面试要点速记
-
-- **为什么用 CRDT 不用 OT**：OT 需要中心化的 transform 服务器维护操作顺序，扩展和实现都更复杂；CRDT（如 Yjs 的 YATA 算法）保证任意到达顺序的 update 都能无冲突地合并到同一最终状态，天然适合去中心化/多服务器场景。Figma、Linear 等新一代协作工具转向 CRDT 类机制也是这个原因。
-- **单机 WebSocket 的扩展瓶颈**：一个 Node 进程内的 WS 连接只能广播给自己进程里的客户端；用户量上来后要多开进程/机器，这时候同一房间的两个人可能连在不同实例上，必须靠 Redis pub/sub 把"实例 A 收到的 update"广播给"实例 B 上的客户端"。
-- **一致性模型**：最终一致（eventual consistency）——不保证任意时刻所有副本状态相同，但保证网络分区恢复、所有 update 送达后所有副本收敛到同一状态。
+1. **Authentication / room permissions**: right now any room id can be joined. A production version should add JWT and room-membership checks.
+2. **Further rendering work**: react-konva currently redraws the whole layer. Once there are thousands of shapes, this should move to dirty-region redraws or separate layers (static shapes on one layer, the shape being dragged on its own layer).
+3. **Snapshot compaction**: full `Y.encodeStateAsUpdate` snapshots grow with the document's history. A production setup should periodically replace the old snapshot with a fresh `Y.encodeStateAsUpdate(doc)` (a form of GC/compaction) instead of accumulating an ever-growing update log.
 
 ## Deployment and Testing
 
