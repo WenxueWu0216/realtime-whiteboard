@@ -150,6 +150,7 @@ E2E_BASE_URL=https://some-host npm run test:stack   # any running deployment
 `.github/workflows/deploy.yml` deploys to **Google Cloud Run**:
 
 - Trigger: `workflow_run` of CI, and only when that run **succeeded** for a **push to `main`** in this repository. It checks out exactly the commit CI tested.
+- Opt-in: the job is **skipped** until the repository variable `DEPLOY_ENABLED` is set to `true`. It is not set yet: no GCP project is connected, so nothing is deployed and there is no live URL.
 - Auth: **Workload Identity Federation** via `google-github-actions/auth` (no service-account key files). It builds the image, pushes it to Artifact Registry (`<region>-docker.pkg.dev/<project>/<repo>/<service>:<sha>`) and deploys it with `google-github-actions/deploy-cloudrun` using `--port=8080 --timeout=3600 --session-affinity`. The long timeout is there because each open WebSocket counts as a request.
 - Required repository **secrets** (referenced by name only): `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`.
 - Optional repository **variables**: `CLOUD_RUN_SERVICE` (default `realtime-whiteboard`), `GCP_ARTIFACT_REPO` (default `whiteboard`), `CLOUD_RUN_SECRETS` (Secret Manager references for `REDIS_URL` / `MONGO_URL`, e.g. `REDIS_URL=whiteboard-redis-url:latest,MONGO_URL=whiteboard-mongo-url:latest`), `CLOUD_RUN_EXTRA_FLAGS` (e.g. `--max-instances=1`), and `CLOUD_RUN_ALLOW_UNAUTHENTICATED` (`true` makes the service public and enables a `/healthz` smoke test).

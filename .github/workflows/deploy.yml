@@ -2,6 +2,10 @@ name: Deploy to Cloud Run
 
 # Runs only after the CI workflow has finished successfully for a push to
 # main - never for pull requests and never if any CI job failed.
+#
+# Opt-in: the job is skipped (not failed) until the repository variable
+# DEPLOY_ENABLED is set to "true", i.e. until the GCP project and the
+# secrets below have been set up.
 on:
   workflow_run:
     workflows: [CI]
@@ -22,7 +26,8 @@ concurrency:
 #   GCP_REGION                      e.g. europe-west1
 #   GCP_WORKLOAD_IDENTITY_PROVIDER  projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
 #   GCP_SERVICE_ACCOUNT             deployer@<project>.iam.gserviceaccount.com
-# Optional repository variables (Settings -> Secrets and variables -> Variables):
+# Repository variables (Settings -> Secrets and variables -> Variables):
+#   DEPLOY_ENABLED                  "true" to turn deployment on (required)
 #   CLOUD_RUN_SERVICE               service name (default: realtime-whiteboard)
 #   GCP_ARTIFACT_REPO               Artifact Registry docker repo (default: whiteboard)
 #   CLOUD_RUN_SECRETS               Secret Manager refs mounted as env vars, e.g.
@@ -38,6 +43,7 @@ env:
 jobs:
   deploy:
     if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
